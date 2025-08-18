@@ -1,42 +1,37 @@
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+
 class LLMService {
   constructor() {
-    this.ollamaUrl = 'http://localhost:11434';
-    this.preferredModels = [
-      'llama3.1:8b',
-      'qwen2.5:7b',
-      'mistral:7b',
-      'llama3.2:latest',
-      'llama3.2:3b'
-    ];
-    this.currentModel = 'llama3.2:3b';
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    this.model = this.genAI.getGenerativeModel({ 
+      model: "gemini-1.5-flash",
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.9,
+        maxOutputTokens: 800,
+      }
+    });
+    this.isInitialized = false;
   }
 
   async initializeModel() {
     try {
-      const response = await fetch(`${this.ollamaUrl}/api/tags`);
-      if (!response.ok) throw new Error('Ollama not available');
-      
-      const data = await response.json();
-      const availableModels = data.models.map(m => m.name);
-      
-      for (const model of this.preferredModels) {
-        if (availableModels.some(available => available.includes(model.split(':')[0]))) {
-          this.currentModel = model;
-          console.log(`Using model: ${this.currentModel}`);
-          break;
-        }
-      }
-      
+      const testResult = await this.model.generateContent("Hello");
+      this.isInitialized = true;
+      console.log('Gemini API initialized successfully');
       return true;
     } catch (error) {
-      console.log('Model initialization failed, using default');
+      console.error('Gemini API initialization failed:', error.message);
+      this.isInitialized = false;
       return false;
     }
   }
 
   async generateResponse(query, context, conversationHistory = []) {
     try {
-      await this.initializeModel();
+      if (!this.isInitialized) {
+        await this.initializeModel();
+      }
 
       const systemPrompt = `You are a financial analyst assistant. Use the provided context from company documents to answer questions accurately and professionally.
 
@@ -52,60 +47,19 @@ Guidelines:
 - Use markdown formatting with ** for headers and * for bullets
 - If asked about charts/graphs, suggest what data could be visualized`;
 
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        ...conversationHistory.slice(-6),
-        { role: 'user', content: query }
-      ];
+      const conversationContext = conversationHistory.length > 0 
+        ? `\n\nPrevious conversation:\n${conversationHistory.slice(-6).map(msg => `${msg.role}: ${msg.content}`).join('\n')}`
+        : '';
 
-      const prompt = this.formatMessagesForOllama(messages);
+      const fullPrompt = `${systemPrompt}${conversationContext}\n\nUser question: ${query}\n\nAssistant:`;
 
-      const response = await fetch(`${this.ollamaUrl}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.currentModel,
-          prompt: prompt,
-          stream: false,
-          options: {
-            temperature: 0.7,
-            top_p: 0.9,
-            max_tokens: 800,
-            repeat_penalty: 1.1,
-            stop: ['Human:', 'User:']
-          }
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`Ollama API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      return data.response.trim();
+      const result = await this.model.generateContent(fullPrompt);
+      const response = result.response;
+      return response.text().trim();
     } catch (error) {
-      console.error('Ollama error:', error.message);
+      console.error('Gemini API error:', error.message);
       return this.getFallbackResponse(query, context);
     }
-  }
-
-  formatMessagesForOllama(messages) {
-    let prompt = '';
-    
-    for (const message of messages) {
-      if (message.role === 'system') {
-        prompt += `System: ${message.content}\n\n`;
-      } else if (message.role === 'user') {
-        prompt += `Human: ${message.content}\n\n`;
-      } else if (message.role === 'assistant') {
-        prompt += `Assistant: ${message.content}\n\n`;
-      }
-    }
-    
-    prompt += 'Assistant: ';
-    return prompt;
   }
 
   getFallbackResponse(query, context) {
@@ -115,7 +69,7 @@ Guidelines:
 
     const relevantInfo = context.slice(0, 3).map(item => item.text).join(' ');
     
-    return `Based on the available documents, here's what I found related to your query:\n\n${relevantInfo.substring(0, 400)}...\n\nNote: This is a simplified response. For more detailed analysis, please ensure the local LLM (Ollama) is running.`;
+    return `Based on the available documents, here's what I found related to your query:\n\n${relevantInfo.substring(0, 400)}...\n\nNote: This is a simplified response. The AI service is currently unavailable.`;
   }
 
   async detectChartIntent(query) {
@@ -313,26 +267,17 @@ Guidelines:
       .join(' ');
   }
 
-  async checkOllamaStatus() {
+  async checkGeminiStatus() {
     try {
-      const response = await fetch(`${this.ollamaUrl}/api/tags`);
-      return response.ok;
+      const result = await this.model.generateContent("test");
+      return true;
     } catch (error) {
       return false;
     }
   }
 
-  async pullModel(modelName) {
-    try {
-      const response = await fetch(`${this.ollamaUrl}/api/pull`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: modelName })
-      });
-      return response.ok;
-    } catch (error) {
-      return false;
-    }
+  async checkOllamaStatus() {
+    return await this.checkGeminiStatus();
   }
 }
 

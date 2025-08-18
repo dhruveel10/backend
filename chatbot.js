@@ -32,20 +32,20 @@ app.post('/api/chat', async (req, res) => {
 });
 
 app.get('/api/health', async (req, res) => {
-  const ollamaStatus = await llmService.checkOllamaStatus();
+  const geminiStatus = await llmService.checkGeminiStatus();
   res.json({ 
     status: 'healthy',
-    ollama: ollamaStatus ? 'running' : 'offline'
+    gemini: geminiStatus ? 'running' : 'offline'
   });
 });
 
 app.get('/api/stats', async (req, res) => {
   try {
     const stats = await vectorService.getStats();
-    const ollamaStatus = await llmService.checkOllamaStatus();
+    const geminiStatus = await llmService.checkGeminiStatus();
     res.json({
       ...stats,
-      llmStatus: ollamaStatus ? 'online' : 'offline'
+      llmStatus: geminiStatus ? 'online' : 'offline'
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get stats' });
@@ -54,6 +54,6 @@ app.get('/api/stats', async (req, res) => {
 
 app.listen(PORT, async () => {
   console.log(`Chatbot server running on port ${PORT}`);
-  const ollamaStatus = await llmService.checkOllamaStatus();
-  console.log(`Ollama status: ${ollamaStatus ? 'Running' : 'Offline - run "ollama serve" to start'}`);
+  const geminiStatus = await llmService.checkGeminiStatus();
+  console.log(`Gemini API status: ${geminiStatus ? 'Connected' : 'Offline - check GEMINI_API_KEY'}`);
 });

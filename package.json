@@ -1,10 +1,31 @@
 {
+  "name": "financial-chatbot-backend",
+  "version": "1.0.0",
+  "description": "Financial chatbot with RAG using Pinecone and Gemini API",
+  "main": "chatbot.js",
+  "scripts": {
+    "start": "node chatbot.js",
+    "dev": "nodemon chatbot.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "dependencies": {
-    "@pinecone-database/pinecone": "^6.1.2",
+    "@google/generative-ai": "^0.17.1",
+    "@pinecone-database/pinecone": "^3.0.0",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.1",
-    "express": "^5.1.0",
-    "openai": "^5.12.2",
-    "pdf-parse": "^1.1.1"
-  }
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "keywords": [
+    "chatbot",
+    "ai",
+    "gemini",
+    "pinecone",
+    "rag",
+    "financial"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
 }
