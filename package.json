@@ -4,9 +4,13 @@
   "description": "Financial chatbot with RAG using Pinecone and Gemini API",
   "main": "chatbot.js",
   "scripts": {
+    "build": "echo 'No build step required'",
     "start": "node chatbot.js",
     "dev": "nodemon chatbot.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "dependencies": {
     "@google/generative-ai": "^0.17.1",
@@ -25,7 +29,5 @@
     "pinecone",
     "rag",
     "financial"
-  ],
-  "author": "Your Name",
-  "license": "MIT"
+  ]
 }
