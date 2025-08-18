@@ -1,6 +1,4 @@
 const { Pinecone } = require('@pinecone-database/pinecone');
-const { spawn } = require('child_process');
-const path = require('path');
 
 class VectorService {
   constructor() {
@@ -11,39 +9,54 @@ class VectorService {
   }
 
   async generateEmbedding(text) {
-    return new Promise((resolve, reject) => {
-      const python = spawn('python3', [path.join(__dirname, '../generate_embeddings.py')], {
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
+    return this.createSimpleEmbedding(text);
+  }
+
+  createSimpleEmbedding(text) {
+    const embedding = new Array(384).fill(0);
+    const cleanText = text.toLowerCase().replace(/[^\w\s]/g, ' ');
+    const words = cleanText.split(/\s+/).filter(word => word.length > 0);
+    
+    for (let i = 0; i < words.length && i < 384; i++) {
+      const word = words[i];
+      let hash = 0;
+      for (let j = 0; j < word.length; j++) {
+        hash = ((hash << 5) - hash + word.charCodeAt(j)) & 0x7fffffff;
+      }
       
-      let output = '';
-      let error = '';
-      
-      python.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-      
-      python.stderr.on('data', (data) => {
-        error += data.toString();
-      });
-      
-      python.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`Embedding generation failed: ${error}`));
-          return;
-        }
-        
-        try {
-          const embedding = JSON.parse(output.trim());
-          resolve(embedding);
-        } catch (e) {
-          reject(new Error(`Failed to parse embedding: ${e.message}`));
-        }
-      });
-      
-      python.stdin.write(text);
-      python.stdin.end();
-    });
+      const index = hash % 384;
+      embedding[index] += 1 / Math.sqrt(words.length);
+    }
+    
+    for (let i = 0; i < Math.min(text.length, 384); i++) {
+      const charCode = text.charCodeAt(i);
+      embedding[i] += (charCode / 255 - 0.5) * 0.1;
+    }
+    
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+    return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
+  }
+
+  getFallbackEmbedding(text) {
+    const hash = this.simpleHash(text);
+    const embedding = new Array(384).fill(0);
+    
+    for (let i = 0; i < Math.min(text.length, 384); i++) {
+      embedding[i] = (text.charCodeAt(i) / 255) * 2 - 1;
+    }
+    
+    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+    return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
+  }
+
+  simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return hash;
   }
 
   async searchSimilar(query, topK = 5) {
@@ -83,7 +96,7 @@ class VectorService {
   async searchBySource(sourceName, topK = 10) {
     try {
       const results = await this.index.query({
-        vector: new Array(512).fill(0),
+        vector: new Array(384).fill(0),
         topK: topK,
         includeMetadata: true,
         filter: {
