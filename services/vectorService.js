@@ -1,62 +1,50 @@
 const { Pinecone } = require('@pinecone-database/pinecone');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 class VectorService {
   constructor() {
     this.pc = new Pinecone({
       apiKey: process.env.PINECONE_API_KEY
     });
-    this.index = this.pc.index('bull-ai-v2');
+    this.index = this.pc.index('financial-chatbot-v3');
+    
+    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    this.embeddingModel = this.genAI.getGenerativeModel({ model: "embedding-001" });
   }
 
   async generateEmbedding(text) {
-    return this.createSimpleEmbedding(text);
+    try {
+      const result = await this.embeddingModel.embedContent(text);
+      return result.embedding.values;
+    } catch (error) {
+      console.error('Gemini embedding error:', error.message);
+      return this.createFallbackEmbedding(text);
+    }
   }
 
-  createSimpleEmbedding(text) {
-    const embedding = new Array(384).fill(0);
+  createFallbackEmbedding(text) {
+    const embedding = new Array(768).fill(0);
     const cleanText = text.toLowerCase().replace(/[^\w\s]/g, ' ');
     const words = cleanText.split(/\s+/).filter(word => word.length > 0);
     
-    for (let i = 0; i < words.length && i < 384; i++) {
+    for (let i = 0; i < words.length && i < 768; i++) {
       const word = words[i];
       let hash = 0;
       for (let j = 0; j < word.length; j++) {
         hash = ((hash << 5) - hash + word.charCodeAt(j)) & 0x7fffffff;
       }
       
-      const index = hash % 384;
+      const index = hash % 768;
       embedding[index] += 1 / Math.sqrt(words.length);
     }
     
-    for (let i = 0; i < Math.min(text.length, 384); i++) {
+    for (let i = 0; i < Math.min(text.length, 768); i++) {
       const charCode = text.charCodeAt(i);
       embedding[i] += (charCode / 255 - 0.5) * 0.1;
     }
     
     const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
     return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
-  }
-
-  getFallbackEmbedding(text) {
-    const hash = this.simpleHash(text);
-    const embedding = new Array(384).fill(0);
-    
-    for (let i = 0; i < Math.min(text.length, 384); i++) {
-      embedding[i] = (text.charCodeAt(i) / 255) * 2 - 1;
-    }
-    
-    const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
-    return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
-  }
-
-  simpleHash(str) {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash;
-    }
-    return hash;
   }
 
   async searchSimilar(query, topK = 5) {
@@ -96,7 +84,7 @@ class VectorService {
   async searchBySource(sourceName, topK = 10) {
     try {
       const results = await this.index.query({
-        vector: new Array(384).fill(0),
+        vector: new Array(768).fill(0),
         topK: topK,
         includeMetadata: true,
         filter: {

@@ -1,17 +1,20 @@
 require('dotenv').config();
 const { Pinecone } = require('@pinecone-database/pinecone');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const path = require('path');
 const pdf = require('pdf-parse');
-const { spawn } = require('child_process');
 
 const pc = new Pinecone({
   apiKey: process.env.PINECONE_API_KEY
 });
 
-const index = pc.index('bull-ai-v2');
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const embeddingModel = genAI.getGenerativeModel({ model: "embedding-001" });
 
-function chunkText(text, chunkSize = 4000, overlap = 200) {
+const index = pc.index('financial-chatbot-v3');
+
+function chunkText(text, chunkSize = 3000, overlap = 300) {
   if (!text || text.length === 0) {
     return [];
   }
@@ -30,8 +33,8 @@ function chunkText(text, chunkSize = 4000, overlap = 200) {
     if (end > text.length) end = text.length;
     
     const chunk = text.slice(start, end);
-    if (chunk.trim().length > 0) {
-      chunks.push(chunk);
+    if (chunk.trim().length > 100) {
+      chunks.push(chunk.trim());
     }
     
     start = end - overlap;
@@ -41,61 +44,53 @@ function chunkText(text, chunkSize = 4000, overlap = 200) {
   
   return chunks;
 }
+
 async function generateEmbeddingsBatch(texts) {
-  return new Promise((resolve, reject) => {
-    const python = spawn('python3', [path.join(__dirname, 'embeddings.py')], {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+  const embeddings = [];
+  const batchSize = 10;
+  
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize);
+    console.log(`Generating embeddings ${i + 1}-${Math.min(i + batch.length, texts.length)}/${texts.length}`);
     
-    let output = '';
-    let error = '';
+    const batchEmbeddings = await Promise.all(
+      batch.map(async (text) => {
+        try {
+          const result = await embeddingModel.embedContent(text);
+          return result.embedding.values;
+        } catch (error) {
+          console.error(`Embedding error for text chunk: ${error.message}`);
+          return createFallbackEmbedding(text);
+        }
+      })
+    );
     
-    python.stdout.on('data', (data) => {
-      output += data.toString();
-    });
+    embeddings.push(...batchEmbeddings);
     
-    python.stderr.on('data', (data) => {
-      error += data.toString();
-    });
-    
-    python.on('close', (code) => {
-      if (code !== 0) {
-        console.error(`Python process exited with code ${code}`);
-        console.error(`Python stderr: ${error}`);
-        reject(new Error(`Python script failed with code ${code}: ${error}`));
-        return;
-      }
-      
-      try {
-        const embeddings = JSON.parse(output.trim());
-        resolve(embeddings);
-      } catch (e) {
-        console.error(`Failed to parse Python output: ${output.substring(0, 500)}`);
-        reject(new Error(`Failed to parse embeddings: ${e.message}`));
-      }
-    });
-    
-    python.on('error', (err) => {
-      console.error(`Python process error: ${err.message}`);
-      reject(err);
-    });
-    
-    python.stdin.on('error', (err) => {
-      if (err.code === 'EPIPE') {
-        console.error('EPIPE error: Python process closed unexpectedly');
-      }
-      reject(err);
-    });
-    
-    try {
-      const jsonData = JSON.stringify(texts);
-      python.stdin.write(jsonData);
-      python.stdin.end();
-    } catch (err) {
-      console.error(`Error writing to Python process: ${err.message}`);
-      reject(err);
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  
+  return embeddings;
+}
+
+function createFallbackEmbedding(text) {
+  const embedding = new Array(768).fill(0);
+  const cleanText = text.toLowerCase().replace(/[^\w\s]/g, ' ');
+  const words = cleanText.split(/\s+/).filter(word => word.length > 0);
+  
+  for (let i = 0; i < words.length && i < 768; i++) {
+    const word = words[i];
+    let hash = 0;
+    for (let j = 0; j < word.length; j++) {
+      hash = ((hash << 5) - hash + word.charCodeAt(j)) & 0x7fffffff;
     }
-  });
+    
+    const index = hash % 768;
+    embedding[index] += 1 / Math.sqrt(words.length);
+  }
+  
+  const magnitude = Math.sqrt(embedding.reduce((sum, val) => sum + val * val, 0));
+  return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
 }
 
 async function processPDF(filePath) {
@@ -119,38 +114,33 @@ async function processPDF(filePath) {
       return;
     }
     
-    const embeddingBatchSize = 50; 
-    const uploadBatchSize = 100;   
-    let totalUploaded = 0;
+    const embeddings = await generateEmbeddingsBatch(chunks);
     
     const allVectors = [];
-    
-    for (let i = 0; i < chunks.length; i += embeddingBatchSize) {
-      const batch = chunks.slice(i, i + embeddingBatchSize);
-      console.log(`Generating embeddings for chunks ${i + 1}-${Math.min(i + batch.length, chunks.length)}/${chunks.length}`);
-      
-      const embeddings = await generateEmbeddingsBatch(batch);
-      
-      for (let j = 0; j < batch.length; j++) {
-        allVectors.push({
-          id: `${fileName}_chunk_${i + j}`,
-          values: embeddings[j],
-          metadata: {
-            text: batch[j],
-            source: fileName,
-            chunkIndex: i + j
-          }
-        });
-      }
+    for (let j = 0; j < chunks.length; j++) {
+      allVectors.push({
+        id: `${fileName}_chunk_${j}`,
+        values: embeddings[j],
+        metadata: {
+          text: chunks[j],
+          source: fileName,
+          chunkIndex: j
+        }
+      });
     }
     
     console.log(`Generated all ${allVectors.length} embeddings for ${fileName}`);
+    
+    const uploadBatchSize = 100;
+    let totalUploaded = 0;
     
     for (let i = 0; i < allVectors.length; i += uploadBatchSize) {
       const uploadBatch = allVectors.slice(i, i + uploadBatchSize);
       await index.upsert(uploadBatch);
       totalUploaded += uploadBatch.length;
       console.log(`Uploaded batch ${Math.floor(i/uploadBatchSize) + 1} for ${fileName} (${totalUploaded}/${allVectors.length})`);
+      
+      await new Promise(resolve => setTimeout(resolve, 200));
     }
     
     console.log(`Completed ${fileName}: ${totalUploaded} vectors uploaded`);
@@ -159,7 +149,6 @@ async function processPDF(filePath) {
   }
 }
 
-// Process PDFs sequentially to avoid resource conflicts
 async function uploadPDFs(pdfDirectory) {
   if (!fs.existsSync(pdfDirectory)) {
     console.error(`Directory ${pdfDirectory} does not exist`);

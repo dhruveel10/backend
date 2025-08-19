@@ -1,21 +1,3 @@
-import sys
-import json
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
-
-def process_embeddings(texts):
-    """Generate embeddings for a batch of texts"""
-    embeddings = model.encode(texts, show_progress_bar=False)
-    
-    processed_embeddings = []
-    for embedding in embeddings:
-        processed_embeddings.append(embedding.tolist())
-    
-    return processed_embeddings
-
-import sys
 import json
 from sentence_transformers import SentenceTransformer
 import numpy as np
