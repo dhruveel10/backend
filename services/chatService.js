@@ -28,10 +28,10 @@ class ChatService {
     try {
       const session = this.getSession(sessionId);
       
-      const searchResults = await this.vectorService.searchSimilar(message, 12);
+      const searchResults = await this.vectorService.searchSimilar(message, 15);
       const filteredResults = this.removeDuplicates(searchResults);
       
-      const chartIntent = await this.detectChartRequest(message, filteredResults);
+      const chartIntent = this.detectChartRequest(message, filteredResults);
       
       const response = await this.llmService.generateResponse(
         message, 
@@ -41,11 +41,13 @@ class ChatService {
 
       let chartData = null;
       if (chartIntent.needsChart) {
-        chartData = await this.extractChartDataFromContext(message, filteredResults, chartIntent, response);
+        chartData = this.extractTableBasedChartData(response, message, filteredResults, chartIntent);
         
         if (!chartData || chartData.length < 2) {
           console.log('Chart requested but insufficient data found. No chart will be generated.');
           chartData = null;
+        } else {
+          console.log('Chart data extracted successfully:', chartData);
         }
       }
 
@@ -74,47 +76,27 @@ class ChatService {
     }
   }
 
-  async detectChartRequest(message, context) {
+  detectChartRequest(message, context) {
     const lowerMessage = message.toLowerCase();
     
-    if (lowerMessage.includes('chart') || lowerMessage.includes('graph') || 
-        lowerMessage.includes('visualize') || lowerMessage.includes('plot') ||
-        lowerMessage.includes('show') && (lowerMessage.includes('data') || lowerMessage.includes('comparison'))) {
-      
+    const chartKeywords = [
+      'chart', 'graph', 'visualize', 'plot', 'show me', 'display',
+      'quarterly comparison', 'compare', 'comparison', 'vs', 'versus',
+      'trend', 'performance', 'breakdown', 'distribution'
+    ];
+    
+    const hasChartKeyword = chartKeywords.some(keyword => lowerMessage.includes(keyword));
+    
+    if (hasChartKeyword) {
       const company = this.extractCompanyFromMessage(message, context);
       
-      if (lowerMessage.includes('quarterly') || lowerMessage.includes('quarter')) {
+      if (lowerMessage.includes('quarterly') || lowerMessage.includes('quarter') || 
+          lowerMessage.includes('q1') || lowerMessage.includes('q2') || 
+          lowerMessage.includes('q3') || lowerMessage.includes('q4')) {
         return {
           needsChart: true,
           chartType: 'bar',
           dataPoints: ['quarterly', 'comparison'],
-          company: company
-        };
-      }
-      
-      if (lowerMessage.includes('comparison') || lowerMessage.includes('compare') || lowerMessage.includes('vs')) {
-        return {
-          needsChart: true,
-          chartType: 'bar',
-          dataPoints: ['comparison', 'financial'],
-          company: company
-        };
-      }
-      
-      if (lowerMessage.includes('trend') || lowerMessage.includes('over time') || lowerMessage.includes('growth')) {
-        return {
-          needsChart: true,
-          chartType: 'line',
-          dataPoints: ['trend', 'financial'],
-          company: company
-        };
-      }
-      
-      if (lowerMessage.includes('pie') || lowerMessage.includes('distribution') || lowerMessage.includes('breakdown')) {
-        return {
-          needsChart: true,
-          chartType: 'pie',
-          dataPoints: ['distribution', 'segment'],
           company: company
         };
       }
@@ -124,17 +106,6 @@ class ChatService {
         chartType: 'bar',
         dataPoints: ['financial'],
         company: company
-      };
-    }
-    
-    if ((lowerMessage.includes('quarterly') && (lowerMessage.includes('comparison') || lowerMessage.includes('vs'))) ||
-        (lowerMessage.includes('q1') && lowerMessage.includes('q2')) ||
-        (lowerMessage.includes('fy') && lowerMessage.includes('vs'))) {
-      return {
-        needsChart: true,
-        chartType: 'bar',
-        dataPoints: ['quarterly', 'comparison'],
-        company: this.extractCompanyFromMessage(message, context)
       };
     }
     
@@ -148,423 +119,332 @@ class ChatService {
 
   extractCompanyFromMessage(message, context) {
     const lowerMessage = message.toLowerCase();
-    const words = lowerMessage.split(/\s+/);
     
     if (context && context.length > 0) {
-      const sources = context.map(item => item.source.toLowerCase());
-      for (const source of sources) {
-        for (const word of words) {
-          if (word.length > 3 && source.includes(word)) {
-            return word;
+      for (const item of context) {
+        if (item.company) {
+          const companyWords = item.company.toLowerCase().split(/\s+/);
+          for (const word of companyWords) {
+            if (word.length > 3 && lowerMessage.includes(word)) {
+              return item.company.split(' ')[0];
+            }
           }
         }
       }
+      
+      if (context[0] && context[0].company) {
+        return context[0].company.split(' ')[0];
+      }
     }
     
+    const words = lowerMessage.split(/\s+/);
+    const excludeWords = ['chart', 'graph', 'show', 'data', 'quarterly', 'comparison', 'revenue', 'profit', 'financial', 'performance'];
     const potentialCompanies = words.filter(word => 
-      word.length > 3 && 
-      !['chart', 'graph', 'show', 'data', 'quarterly', 'comparison', 'revenue', 'profit'].includes(word)
+      word.length > 3 && !excludeWords.includes(word)
     );
     
     return potentialCompanies.length > 0 ? potentialCompanies[0] : null;
   }
 
-  async extractChartDataFromContext(message, context, chartIntent, response) {
-    const contextText = context.map(item => item.text).join('\n\n');
-    const responseText = response || '';
-    const combinedText = contextText + '\n\n' + responseText;
+  extractTableBasedChartData(response, message, context, chartIntent) {
+    console.log('Extracting table-based chart data...');
     
-    let extractedData = [];
+    let tableData = this.extractFinancialTableData(response);
+    if (tableData.length >= 2) {
+      console.log('Found table data in response:', tableData);
+      return tableData;
+    }
     
-    if (chartIntent.dataPoints.includes('quarterly')) {
-      extractedData = this.extractQuarterlyChartData(combinedText, chartIntent.company);
-      if (extractedData.length >= 2) {
-        return extractedData;
+    for (const item of context) {
+      if (item.isSpecialContent && item.contentType === 'table') {
+        tableData = this.extractFinancialTableData(item.text);
+        if (tableData.length >= 2) {
+          console.log('Found table data in context:', tableData);
+          return tableData;
+        }
       }
     }
     
-    if (chartIntent.dataPoints.includes('comparison')) {
-      extractedData = this.extractComparisonChartData(combinedText, chartIntent.company);
-      if (extractedData.length >= 2) {
-        return extractedData;
+    for (const item of context) {
+      if (item.isSpecialContent && item.contentType === 'financial_section') {
+        tableData = this.extractFinancialTableData(item.text);
+        if (tableData.length >= 2) {
+          console.log('Found table data in financial section:', tableData);
+          return tableData;
+        }
       }
     }
     
-    if (chartIntent.dataPoints.includes('trend')) {
-      extractedData = this.extractTrendChartData(combinedText, chartIntent.company);
-      if (extractedData.length >= 2) {
-        return extractedData;
+    for (const item of context) {
+      tableData = this.extractFinancialTableData(item.text);
+      if (tableData.length >= 2) {
+        console.log('Found table data in context item:', tableData);
+        return tableData;
       }
     }
     
-    if (chartIntent.dataPoints.includes('distribution') || chartIntent.dataPoints.includes('segment')) {
-      extractedData = this.extractSegmentChartData(combinedText, chartIntent.company);
-      if (extractedData.length >= 2) {
-        return extractedData;
-      }
+    const bulletData = this.extractBulletPointData(response);
+    if (bulletData.length >= 2) {
+      console.log('Using bullet point data:', bulletData);
+      return bulletData;
     }
     
-    if (chartIntent.dataPoints.includes('financial')) {
-      extractedData = this.extractFinancialChartData(combinedText);
-      if (extractedData.length >= 2) {
-        return extractedData;
-      }
-    }
-    
-    extractedData = this.extractStructuredDataFromResponse(responseText);
-    if (extractedData.length >= 2) {
-      return extractedData;
-    }
-    
-    return null;
+    console.log('No sufficient table data found');
+    return [];
   }
 
-  extractQuarterlyChartData(text, company) {
+  extractFinancialTableData(text) {
     const data = [];
+    console.log('Analyzing text for financial table data...');
+    
+    if (this.isTableStyleTable(text)) {
+      const tableData = this.extractTableDataFixed(text);
+      if (tableData.length >= 2) {
+        return tableData;
+      }
+    }
+    
+    const structuredData = this.extractStructuredFinancialData(text);
+    if (structuredData.length >= 2) {
+      return structuredData;
+    }
+    
+    const quarterlyData = this.extractQuarterlyDataFromText(text);
+    if (quarterlyData.length >= 2) {
+      return quarterlyData;
+    }
+    
+    return data;
+  }
+
+  isTableStyleTable(text) {
     const lowerText = text.toLowerCase();
+    return (lowerText.includes('q1') || lowerText.includes('quarter') || lowerText.includes('fy')) && 
+           (lowerText.includes('orders') || lowerText.includes('revenue') || lowerText.includes('profit') || 
+            lowerText.includes('sales') || lowerText.includes('income') || lowerText.includes('earnings'));
+  }
+
+  extractTableDataFixed(text) {
+    const data = [];
+    const lines = text.split('\n');
+    
+    console.log('Processing financial table with fixed extraction...');
+    
+    const commonMetrics = ['Orders', 'Revenue', 'Sales', 'Income', 'Profit', 'EBITDA', 'PBT', 'PAT', 'Earnings'];
+    const timePatterns = ['Q1', 'Q2', 'Q3', 'Q4', 'FY', 'Quarter', 'Year'];
+    
+    let tableStarted = false;
+    let headerLine = '';
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      
+      if (timePatterns.some(pattern => line.includes(pattern)) && 
+          line.split(/\s+/).length > 3) {
+        headerLine = line;
+        tableStarted = true;
+        console.log('Found header line:', headerLine);
+        continue;
+      }
+      
+      if (tableStarted) {
+        for (const metric of commonMetrics) {
+          if (line.startsWith(metric)) {
+            const rowData = this.parseTableRow(line, metric);
+            data.push(...rowData);
+            console.log(`Extracted ${metric} data:`, rowData);
+            break;
+          }
+        }
+      }
+    }
+    
+    if (data.length < 2) {
+      console.log('Trying alternative table parsing...');
+      return this.extractTableDataAlternative(text);
+    }
+    
+    console.log('Final extracted table data:', data);
+    return data.slice(0, 15);
+  }
+
+  parseTableRow(line, metric) {
+    const rowData = [];
+    
+    const parts = line.split(/\s+/);
+    const values = [];
+    
+    for (let i = 1; i < parts.length; i++) {
+      const cleanValue = parts[i].replace(/,/g, '').replace(/[^\d.-]/g, '');
+      const numValue = parseFloat(cleanValue);
+      
+      if (!isNaN(numValue) && numValue > 0) {
+        values.push(numValue);
+      }
+    }
+    
+    values.forEach((value, index) => {
+      if (value > 0) {
+        rowData.push({
+          label: `${metric} Period ${index + 1}`,
+          value: value
+        });
+      }
+    });
+    
+    return rowData;
+  }
+
+  extractTableDataAlternative(text) {
+    const data = [];
     
     const patterns = [
-      /(q[1-4]\s+fy20[1-3][0-9])[:\s]*[^\d]*?(?:revenue|income|profit|sales|turnover|pat|ebitda)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion)/gi,
-      /(fy20[1-3][0-9]\s+q[1-4])[:\s]*[^\d]*?(?:revenue|income|profit|sales|turnover|pat|ebitda)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion)/gi,
-      /([1-4]q20[1-3][0-9])[:\s]*[^\d]*?(?:revenue|income|profit|sales|turnover|pat|ebitda)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion)/gi,
-      /(?:revenue|income|profit|sales|turnover|pat|ebitda)[^:]*?(q[1-4]\s+fy20[1-3][0-9])[:\s]*(\d+(?:,\d+)*(?:\.\d+)?)/gi,
-      /(q[1-4]\s+fy20[1-3][0-9])[^:]*?[:]\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi
+      /(orders|revenue|sales|income|profit|earnings|ebitda|pbt|pat)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi
     ];
-
-    const foundData = new Map();
-
-    patterns.forEach(pattern => {
+    
+    const lowerText = text.toLowerCase();
+    
+    const metricMatches = [
+      { pattern: /(orders)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi, metric: 'Orders' },
+      { pattern: /(revenue|sales)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi, metric: 'Revenue' },
+      { pattern: /(profit|pat)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi, metric: 'Profit' },
+      { pattern: /(income)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi, metric: 'Income' },
+      { pattern: /(ebitda)[^\d]*?(\d+(?:,\d+)*(?:\.\d+))/gi, metric: 'EBITDA' }
+    ];
+    
+    metricMatches.forEach(({ pattern, metric }) => {
       let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(lowerText)) !== null) {
-        let period, value;
-        
-        if (match.length >= 3) {
-          period = match[1];
-          value = parseFloat(match[2].replace(/,/g, ''));
-        }
-        
-        if (period && !isNaN(value) && value > 0) {
-          const normalizedPeriod = this.normalizePeriod(period);
-          if (!foundData.has(normalizedPeriod) || foundData.get(normalizedPeriod) < value) {
-            foundData.set(normalizedPeriod, value);
-          }
-        }
-      }
-    });
-
-    const bulletPattern = /•\s*([^:]+)[:]\s*([^;]+);?\s*([^;]*)/gi;
-    let bulletMatch;
-    while ((bulletMatch = bulletPattern.exec(lowerText)) !== null) {
-      const metric = bulletMatch[1].trim();
-      const data1 = bulletMatch[2].trim();
-      const data2 = bulletMatch[3] ? bulletMatch[3].trim() : '';
+      const values = [];
       
-      const quarterlyMatches1 = data1.match(/(q[1-4]\s+fy20[1-3][0-9])[:]\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi);
-      const quarterlyMatches2 = data2.match(/(q[1-4]\s+fy20[1-3][0-9])[:]\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi);
-      
-      [quarterlyMatches1, quarterlyMatches2].forEach(matches => {
-        if (matches) {
-          matches.forEach(match => {
-            const parts = match.split(':');
-            if (parts.length >= 2) {
-              const period = parts[0].trim();
-              const value = parseFloat(parts[1].replace(/,/g, ''));
-              
-              if (!isNaN(value) && value > 0) {
-                const normalizedPeriod = this.normalizePeriod(period);
-                const fullLabel = `${normalizedPeriod} ${this.capitalizeWords(metric)}`;
-                foundData.set(fullLabel, value);
-              }
-            }
-          });
-        }
-      });
-    }
-
-    for (const [period, value] of foundData) {
-      data.push({
-        label: period,
-        value: value
-      });
-    }
-
-    if (data.length < 2) {
-      return this.parseResponseQuarterlyData(lowerText);
-    }
-
-    return data.sort((a, b) => {
-      const aYear = a.label.match(/20[1-3][0-9]/);
-      const bYear = b.label.match(/20[1-3][0-9]/);
-      const aQuarter = a.label.match(/q[1-4]/i);
-      const bQuarter = b.label.match(/q[1-4]/i);
-      
-      if (aYear && bYear) {
-        const yearDiff = parseInt(aYear[0]) - parseInt(bYear[0]);
-        if (yearDiff !== 0) return yearDiff;
-        
-        if (aQuarter && bQuarter) {
-          return aQuarter[0].toLowerCase().localeCompare(bQuarter[0].toLowerCase());
+      while ((match = pattern.exec(lowerText)) !== null && values.length < 5) {
+        const value = parseFloat(match[2].replace(/,/g, ''));
+        if (!isNaN(value) && value > 0) {
+          values.push(value);
         }
       }
       
-      return a.label.localeCompare(b.label);
+      values.forEach((value, index) => {
+        data.push({
+          label: `${metric} Period ${index + 1}`,
+          value: value
+        });
+      });
     });
+    
+    return data;
   }
 
-  parseResponseQuarterlyData(text) {
+  extractStructuredFinancialData(text) {
     const data = [];
+    const lines = text.split('\n');
     
-    const flexiblePatterns = [
-      /(q[1-4]\s+fy20[1-3][0-9])[:\s]*(\d+(?:,\d+)*(?:\.\d+)?)/gi,
-      /(?:revenue|income|profit|pat)[^:]*?[:]\s*([^;]+)/gi,
-      /•[^:]*?(?:revenue|income|profit)[^:]*?[:]\s*([^;]+)/gi
-    ];
-
-    flexiblePatterns.forEach(pattern => {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(text)) !== null && data.length < 8) {
-        if (match[1] && match[2]) {
-          const period = match[1];
-          const value = parseFloat(match[2].replace(/,/g, ''));
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      
+      if (trimmedLine.includes('|') && trimmedLine.includes('INR crore')) {
+        continue;
+      }
+      
+      if (trimmedLine.includes('|')) {
+        const parts = trimmedLine.split('|').map(p => p.trim()).filter(p => p);
+        
+        if (parts.length >= 3) {
+          const metric = parts[0];
           
-          if (!isNaN(value) && value > 0) {
-            data.push({
-              label: this.normalizePeriod(period),
-              value: value
-            });
-          }
-        } else if (match[1]) {
-          const extracted = match[1];
-          const valueMatch = extracted.match(/(\d+(?:,\d+)*(?:\.\d+)?)/);
-          
-          if (valueMatch) {
-            const value = parseFloat(valueMatch[1].replace(/,/g, ''));
+          for (let i = 1; i < parts.length; i++) {
+            const value = parseFloat(parts[i].replace(/,/g, ''));
             if (!isNaN(value) && value > 0) {
-              const context = text.substring(Math.max(0, match.index - 100), match.index + 100);
-              const quarterMatch = context.match(/(q[1-4]\s+fy20[1-3][0-9])/i);
-              
-              const label = quarterMatch ? this.normalizePeriod(quarterMatch[1]) : `Data Point ${data.length + 1}`;
               data.push({
-                label: label,
+                label: `${metric} Col${i}`,
                 value: value
               });
             }
           }
         }
       }
-    });
-
-    const uniqueData = data.filter((item, index, self) => 
-      index === self.findIndex(t => t.label === item.label && t.value === item.value)
-    );
-
-    return uniqueData;
-  }
-
-  extractComparisonChartData(text, company) {
-    return this.extractQuarterlyChartData(text, company);
-  }
-
-  extractTrendChartData(text, company) {
-    const data = this.extractQuarterlyChartData(text, company);
-    return data.sort((a, b) => {
-      const aYear = a.label.match(/20[1-3][0-9]/);
-      const bYear = b.label.match(/20[1-3][0-9]/);
-      if (aYear && bYear) {
-        return parseInt(aYear[0]) - parseInt(bYear[0]);
-      }
-      return a.label.localeCompare(b.label);
-    });
-  }
-
-  extractSegmentChartData(text, company) {
-    const data = [];
-    const lowerText = text.toLowerCase();
-    
-    const segmentPatterns = [
-      /(?:housing|finance|insurance|lending|banking|retail|corporate|personal|commercial)[^:]*?(?:segment|division|business)[^\d]*?(?:revenue|income|contribution)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|%)/gi,
-      /(housing|finance|insurance|lending|banking|retail|corporate|personal|commercial)\s+(?:loans?|finance|segment)[^\d]*?(?:revenue|income)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi,
-      /(india|domestic|international|overseas)[^\d]*?(?:revenue|income)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi
-    ];
-
-    segmentPatterns.forEach(pattern => {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(lowerText)) !== null && data.length < 6) {
-        const fullMatch = match[0];
-        let value, segmentName;
-        
-        if (match[2]) {
-          segmentName = match[1];
-          value = parseFloat(match[2].replace(/,/g, ''));
-        } else {
-          value = parseFloat(match[1].replace(/,/g, ''));
-          segmentName = this.extractSegmentName(fullMatch);
-        }
-        
-        if (!isNaN(value) && value > 0 && segmentName) {
-          data.push({
-            label: this.capitalizeWords(segmentName),
-            value: value
-          });
-        }
-      }
-    });
-
-    return data.filter((item, index, self) => 
-      index === self.findIndex(t => t.label === item.label)
-    );
-  }
-
-  extractFinancialChartData(text) {
-    const data = [];
-    const lowerText = text.toLowerCase();
-    
-    const metricsPatterns = [
-      /(total\s+revenue|net\s+revenue|gross\s+revenue)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi,
-      /(net\s+income|net\s+profit|profit\s+after\s+tax|pat)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi,
-      /(ebitda|operating\s+profit)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi,
-      /(total\s+assets|total\s+liabilities)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr)/gi
-    ];
-
-    metricsPatterns.forEach(pattern => {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(lowerText)) !== null && data.length < 5) {
-        const metric = match[1].trim();
-        const value = parseFloat(match[2].replace(/,/g, ''));
-        
-        if (!isNaN(value) && value > 0) {
-          data.push({
-            label: this.capitalizeWords(metric),
-            value: value
-          });
-        }
-      }
-    });
-
-    return data.filter((item, index, self) => 
-      index === self.findIndex(t => t.label === item.label)
-    );
-  }
-
-  extractStructuredDataFromResponse(responseText) {
-    const data = [];
-    const text = responseText.toLowerCase();
-    
-    const bulletPatterns = [
-      /•([^:]+):\s*(q[1-4]\s+fy20[1-3][0-9]):\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi,
-      /•([^:]+):\s*(q[1-4]\s+fy20[1-3][0-9]):\s*(\d+(?:,\d+)*(?:\.\d+)?)[^;]*?;\s*(q[1-4]\s+fy20[1-3][0-9]):\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi,
-      /•?\s*(?:total\s+)?(?:revenue|profit|income|pat|sales)[^:]*?:\s*(q[1-4]\s+fy20[1-3][0-9]):\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi
-    ];
-
-    bulletPatterns.forEach(pattern => {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(text)) !== null && data.length < 8) {
-        if (match.length >= 4) {
-          const metric = match[1] ? match[1].trim() : 'Financial Metric';
-          const period1 = match[2];
-          const value1 = parseFloat(match[3].replace(/,/g, ''));
-          
-          if (!isNaN(value1) && value1 > 0) {
-            data.push({
-              label: `${this.normalizePeriod(period1)} ${this.capitalizeWords(metric)}`,
-              value: value1
-            });
-          }
-          
-          if (match[5] && match[6]) {
-            const period2 = match[4];
-            const value2 = parseFloat(match[5].replace(/,/g, ''));
-            
-            if (!isNaN(value2) && value2 > 0) {
-              data.push({
-                label: `${this.normalizePeriod(period2)} ${this.capitalizeWords(metric)}`,
-                value: value2
-              });
-            }
-          }
-        }
-      }
-    });
-
-    if (data.length < 2) {
-      const fallbackPatterns = [
-        /(q[1-4]\s+fy20[1-3][0-9])[^:]*?:\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi,
-        /(revenue|profit|income|pat|sales|ebitda)[^:]*?:\s*(\d+(?:,\d+)*(?:\.\d+)?)/gi
-      ];
-
-      fallbackPatterns.forEach(pattern => {
-        let match;
-        pattern.lastIndex = 0;
-        while ((match = pattern.exec(text)) !== null && data.length < 6) {
-          const label = match[1];
-          const value = parseFloat(match[2].replace(/,/g, ''));
-          
-          if (!isNaN(value) && value > 0) {
-            data.push({
-              label: this.normalizePeriod(label) || this.capitalizeWords(label),
-              value: value
-            });
-          }
-        }
-      });
     }
-
+    
     return data;
   }
 
-  normalizePeriod(period) {
-    const p = period.toLowerCase().trim();
+  extractQuarterlyDataFromText(text) {
+    const data = [];
+    const lowerText = text.toLowerCase();
     
-    const quarterMatch = p.match(/q([1-4])/);
-    const yearMatch = p.match(/(20[1-3][0-9])/);
-    const fyMatch = p.match(/fy(20[1-3][0-9])/);
+    const patterns = [
+      /(orders|revenue|profit|sales|income|earnings|ebitda|pbt|pat)[^\d]*?q[1-4]\s*fy\s*\d+[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)/gi,
+      /q[1-4]\s*fy\s*\d+[^\d]*?(orders|revenue|profit|sales|income|earnings|ebitda|pbt|pat)[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)/gi,
+      /(orders|revenue|profit|sales|income|earnings|ebitda|pbt|pat)[^\d]*?quarter\s*\d+[^\d]*?(\d+(?:,\d+)*(?:\.\d+)?)/gi
+    ];
     
-    if (quarterMatch && (yearMatch || fyMatch)) {
-      const quarter = quarterMatch[1];
-      const year = fyMatch ? fyMatch[1] : yearMatch[1];
-      return `Q${quarter} FY${year}`;
-    }
+    patterns.forEach(pattern => {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(lowerText)) !== null) {
+        const metric = match[1];
+        const value = parseFloat(match[2].replace(/,/g, ''));
+        
+        if (!isNaN(value) && value > 0) {
+          const context = match[0];
+          let period = 'Period';
+          
+          if (context.includes('q1')) period = 'Q1';
+          else if (context.includes('q2')) period = 'Q2';
+          else if (context.includes('q3')) period = 'Q3';
+          else if (context.includes('q4')) period = 'Q4';
+          
+          data.push({
+            label: `${this.capitalizeWords(metric)} ${period}`,
+            value: value
+          });
+        }
+      }
+    });
     
-    if (fyMatch) {
-      return `FY${fyMatch[1]}`;
-    }
-    
-    if (yearMatch) {
-      return `FY${yearMatch[1]}`;
-    }
-    
-    if (p.includes('2030')) return 'Q1 FY2030';
-    if (p.includes('2029')) return 'Q1 FY2029';
-    if (p.includes('2028')) return 'Q1 FY2028';
-    if (p.includes('2027')) return 'Q1 FY2027';
-    if (p.includes('2026')) return 'Q1 FY2026';
-    if (p.includes('2025')) return 'Q1 FY2025';
-    if (p.includes('2024')) return 'Q1 FY2024';
-    if (p.includes('2023')) return 'Q1 FY2023';
-    if (p.includes('2022')) return 'Q1 FY2022';
-    if (p.includes('2021')) return 'Q1 FY2021';
-    if (p.includes('2020')) return 'Q1 FY2020';
-    
-    return period.toUpperCase();
+    return data;
   }
 
-  extractSegmentName(fullMatch) {
-    const segments = ['housing', 'finance', 'insurance', 'lending', 'banking', 'retail', 'corporate', 
-                     'personal', 'home', 'vehicle', 'business', 'commercial', 'india', 'domestic', 'international'];
+  extractBulletPointData(text) {
+    const data = [];
+    console.log('Extracting bullet point data from:', text.substring(0, 200));
     
-    const lowerMatch = fullMatch.toLowerCase();
-    for (const segment of segments) {
-      if (lowerMatch.includes(segment)) {
-        return segment;
+    const bulletPatterns = [
+      /\*\*•\s*([^:*]+):\s*\*\*\s*(?:rs\.?\s*|₹\s*|\$\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion|k|m|b)/gi,
+      /•\s*([^:]+):\s*(?:rs\.?\s*|₹\s*|\$\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion|k|m|b)/gi,
+      /\*\*([^:*]+):\s*\*\*\s*(?:rs\.?\s*|₹\s*|\$\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion|k|m|b)/gi,
+      /([A-Za-z\s()]+):\s*(?:rs\.?\s*|₹\s*|\$\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion|k|m|b)/gi,
+      /([A-Za-z\s()]+)\s+(?:rs\.?\s*|₹\s*|\$\s*)?(\d+(?:,\d+)*(?:\.\d+)?)\s*(?:crores?|cr|million|billion|k|m|b)/gi
+    ];
+    
+    bulletPatterns.forEach((pattern, index) => {
+      let match;
+      pattern.lastIndex = 0;
+      
+      while ((match = pattern.exec(text)) !== null) {
+        let metric = match[1].trim();
+        const value = parseFloat(match[2].replace(/,/g, ''));
+        
+        metric = metric.replace(/\*\*/g, '').replace(/•/g, '').trim();
+        
+        if (!isNaN(value) && value > 0 && metric.length > 1) {
+          const existingItem = data.find(item => 
+            item.label.toLowerCase().includes(metric.toLowerCase()) ||
+            metric.toLowerCase().includes(item.label.toLowerCase())
+          );
+          
+          if (!existingItem) {
+            data.push({
+              label: this.capitalizeWords(metric),
+              value: value
+            });
+            console.log(`Pattern ${index + 1} extracted:`, metric, '=', value);
+          }
+        }
       }
-    }
+    });
     
-    return null;
+    console.log('Final bullet point data:', data);
+    return data.slice(0, 8);
   }
 
   capitalizeWords(str) {
@@ -588,28 +468,16 @@ class ChatService {
   generateChartTitle(query, chartType, company) {
     const lowerQuery = query.toLowerCase();
     
-    const companyName = company ? this.capitalizeWords(company) : '';
+    let companyName = '';
+    if (company) {
+      companyName = this.capitalizeWords(company);
+    }
     
     if (lowerQuery.includes('quarterly')) {
       return companyName ? `${companyName} Quarterly Financial Comparison` : 'Quarterly Financial Comparison';
     }
     
-    if (lowerQuery.includes('trend')) {
-      return companyName ? `${companyName} Financial Trend Analysis` : 'Financial Trend Analysis';
-    }
-    
-    if (lowerQuery.includes('segment') || lowerQuery.includes('distribution')) {
-      return companyName ? `${companyName} Business Segment Analysis` : 'Business Segment Analysis';
-    }
-    
-    const titles = {
-      line: 'Financial Trend Analysis',
-      bar: 'Financial Performance Comparison',
-      pie: 'Financial Distribution'
-    };
-    
-    const baseTitle = titles[chartType] || 'Financial Data Visualization';
-    return companyName ? `${companyName} ${baseTitle}` : baseTitle;
+    return companyName ? `${companyName} Financial Performance` : 'Financial Performance Analysis';
   }
 
   clearSession(sessionId) {
