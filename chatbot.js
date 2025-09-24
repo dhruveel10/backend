@@ -4,6 +4,7 @@ const cors = require('cors');
 const { VectorService } = require('./services/vectorService');
 const { LLMService } = require('./services/llmService');
 const { ChatService } = require('./services/chatService');
+const { SessionService } = require('./services/sessionService');
 
 const app = express();
 const PORT = process.env.PORT || 3005;
@@ -13,21 +14,68 @@ app.use(express.json());
 
 const vectorService = new VectorService();
 const llmService = new LLMService();
+const sessionService = new SessionService();
 const chatService = new ChatService(vectorService, llmService);
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message, sessionId } = req.body;
+    let { message, sessionId } = req.body;
     
     if (!message) {
       return res.status(400).json({ error: 'Message is required' });
     }
 
+    if (!sessionId) {
+      sessionId = sessionService.generateSessionId();
+    }
+
+    await sessionService.addMessage(sessionId, { text: message }, true);
+
     const response = await chatService.processMessage(message, sessionId);
-    res.json(response);
+    
+    await sessionService.addMessage(sessionId, response, false);
+
+    res.json({
+      ...response,
+      sessionId
+    });
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/session/:sessionId/history', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { limit = 50 } = req.query;
+    
+    const history = await sessionService.getSessionHistory(sessionId, parseInt(limit));
+    res.json({ sessionId, history });
+  } catch (error) {
+    console.error('Session history error:', error);
+    res.status(500).json({ error: 'Failed to fetch session history' });
+  }
+});
+
+app.delete('/api/session/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const result = await sessionService.clearSession(sessionId);
+    res.json(result);
+  } catch (error) {
+    console.error('Clear session error:', error);
+    res.status(500).json({ error: 'Failed to clear session' });
+  }
+});
+
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const sessions = await sessionService.getAllSessions();
+    res.json({ sessions });
+  } catch (error) {
+    console.error('Get sessions error:', error);
+    res.status(500).json({ error: 'Failed to get sessions' });
   }
 });
 
@@ -43,9 +91,11 @@ app.get('/api/stats', async (req, res) => {
   try {
     const stats = await vectorService.getStats();
     const geminiStatus = await llmService.checkGeminiStatus();
+    const sessionStats = await sessionService.getStats();
     res.json({
       ...stats,
-      llmStatus: geminiStatus ? 'online' : 'offline'
+      llmStatus: geminiStatus ? 'online' : 'offline',
+      sessions: sessionStats
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get stats' });
