@@ -61,11 +61,27 @@ app.get('/api/session/:sessionId/history', async (req, res) => {
     const { sessionId } = req.params;
     const { limit = 50 } = req.query;
     
+    const exists = await sessionService.sessionExists(sessionId);
+    if (!exists) {
+      return res.status(404).json({ error: 'Session not found or expired', sessionId, exists: false });
+    }
+    
     const history = await sessionService.getSessionHistory(sessionId, parseInt(limit));
-    res.json({ sessionId, history });
+    res.json({ sessionId, history, exists: true });
   } catch (error) {
     console.error('Session history error:', error);
     res.status(500).json({ error: 'Failed to fetch session history' });
+  }
+});
+
+app.get('/api/session/:sessionId/exists', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const exists = await sessionService.sessionExists(sessionId);
+    res.json({ sessionId, exists });
+  } catch (error) {
+    console.error('Session exists error:', error);
+    res.status(500).json({ error: 'Failed to check session existence' });
   }
 });
 

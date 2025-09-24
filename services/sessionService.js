@@ -89,6 +89,21 @@ class SessionService {
     }
   }
 
+  async sessionExists(sessionId) {
+    try {
+      if (this.isConnected && this.client) {
+        const sessionKey = `session:${sessionId}`;
+        const exists = await this.client.exists(sessionKey);
+        return exists === 1;
+      } else {
+        return this.fallbackStorage.has(sessionId);
+      }
+    } catch (error) {
+      console.error('Failed to check session existence:', error);
+      return this.fallbackStorage.has(sessionId);
+    }
+  }
+
   async clearSession(sessionId) {
     try {
       if (this.isConnected && this.client) {
