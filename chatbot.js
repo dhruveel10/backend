@@ -33,7 +33,11 @@ app.post('/api/chat', async (req, res) => {
 
     const response = await chatService.processMessage(message, sessionId);
     
-    await sessionService.addMessage(sessionId, response, false);
+    await sessionService.addMessage(sessionId, { 
+      text: response.response,
+      sources: response.sources,
+      chart: response.chart 
+    }, false);
 
     res.json({
       ...response,
