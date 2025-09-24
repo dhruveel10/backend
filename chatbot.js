@@ -182,12 +182,27 @@ io.on('connection', (socket) => {
         chart: response.chart 
       }, false);
 
-      // Stop typing indicator and send response
+      // Stop typing indicator
       socket.emit('bot-typing-stop', { sessionId: currentSessionId });
-      socket.emit('message-response', {
-        ...response,
-        sessionId: currentSessionId
-      });
+      
+      // Stream the response word by word
+      const words = response.response.split(' ');
+      let currentText = '';
+      
+      for (let i = 0; i < words.length; i++) {
+        currentText += (i > 0 ? ' ' : '') + words[i];
+        
+        socket.emit('message-stream', {
+          text: currentText,
+          isComplete: i === words.length - 1,
+          sources: i === words.length - 1 ? response.sources : [],
+          chart: i === words.length - 1 ? response.chart : null,
+          sessionId: currentSessionId
+        });
+        
+        // Add small delay between words for streaming effect
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
 
     } catch (error) {
       console.error('Socket chat error:', error);
