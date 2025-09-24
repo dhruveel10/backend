@@ -1,12 +1,22 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 const { VectorService } = require('./services/vectorService');
 const { LLMService } = require('./services/llmService');
 const { ChatService } = require('./services/chatService');
 const { SessionService } = require('./services/sessionService');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:3000", process.env.FRONTEND_URL].filter(Boolean),
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
 const PORT = process.env.PORT || 3005;
 
 app.use(cors());
@@ -129,8 +139,70 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-app.listen(PORT, async () => {
+// Socket.IO event handlers
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+  
+  socket.on('join-session', (sessionId) => {
+    socket.join(sessionId);
+    console.log(`User ${socket.id} joined session: ${sessionId}`);
+  });
+  
+  socket.on('send-message', async (data) => {
+    try {
+      const { message, sessionId } = data;
+      
+      if (!message) {
+        socket.emit('error', { error: 'Message is required' });
+        return;
+      }
+
+      let currentSessionId = sessionId;
+      if (!currentSessionId) {
+        currentSessionId = sessionService.generateSessionId();
+      }
+
+      const isFirstMessage = (await sessionService.getSessionHistory(currentSessionId, 1)).length === 0;
+      
+      await sessionService.addMessage(currentSessionId, { text: message }, true);
+      
+      if (isFirstMessage) {
+        const title = sessionService.generateTitleFromMessage({ text: message });
+        await sessionService.setSessionTitle(currentSessionId, title);
+      }
+
+      // Emit typing indicator
+      socket.emit('bot-typing', { sessionId: currentSessionId });
+      
+      const response = await chatService.processMessage(message, currentSessionId);
+      
+      await sessionService.addMessage(currentSessionId, { 
+        text: response.response,
+        sources: response.sources,
+        chart: response.chart 
+      }, false);
+
+      // Stop typing indicator and send response
+      socket.emit('bot-typing-stop', { sessionId: currentSessionId });
+      socket.emit('message-response', {
+        ...response,
+        sessionId: currentSessionId
+      });
+
+    } catch (error) {
+      console.error('Socket chat error:', error);
+      socket.emit('error', { error: 'Internal server error' });
+    }
+  });
+  
+  socket.on('disconnect', () => {
+    console.log('User disconnected:', socket.id);
+  });
+});
+
+server.listen(PORT, async () => {
   console.log(`Chatbot server running on port ${PORT}`);
+  console.log(`Socket.IO server enabled with CORS for frontend`);
   const geminiStatus = await llmService.checkGeminiStatus();
   console.log(`Gemini API status: ${geminiStatus ? 'Connected' : 'Offline - check GEMINI_API_KEY'}`);
 });
