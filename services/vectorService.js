@@ -1,44 +1,42 @@
 const { Pinecone } = require('@pinecone-database/pinecone');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { JinaEmbeddingService } = require('./jinaEmbeddingService');
 
 class VectorService {
   constructor() {
     this.pc = new Pinecone({
       apiKey: process.env.PINECONE_API_KEY
     });
-    this.index = this.pc.index('financial-chatbot-v3');
+    this.index = this.pc.index('news-chatbot-rag');
     
-    this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    this.embeddingModel = this.genAI.getGenerativeModel({ model: "embedding-001" });
+    this.jinaEmbedding = new JinaEmbeddingService();
   }
 
   async generateEmbedding(text) {
     try {
-      const result = await this.embeddingModel.embedContent(text);
-      return result.embedding.values;
+      return await this.jinaEmbedding.generateSingleEmbedding(text);
     } catch (error) {
-      console.error('Gemini embedding error:', error.message);
+      console.error('Jina embedding error:', error.message);
       return this.createFallbackEmbedding(text);
     }
   }
 
   createFallbackEmbedding(text) {
-    const embedding = new Array(768).fill(0);
+    const embedding = new Array(1024).fill(0); 
     const cleanText = text.toLowerCase().replace(/[^\w\s]/g, ' ');
     const words = cleanText.split(/\s+/).filter(word => word.length > 0);
     
-    for (let i = 0; i < words.length && i < 768; i++) {
+    for (let i = 0; i < words.length && i < 1024; i++) {
       const word = words[i];
       let hash = 0;
       for (let j = 0; j < word.length; j++) {
         hash = ((hash << 5) - hash + word.charCodeAt(j)) & 0x7fffffff;
       }
       
-      const index = hash % 768;
+      const index = hash % 1024;
       embedding[index] += 1 / Math.sqrt(words.length);
     }
     
-    for (let i = 0; i < Math.min(text.length, 768); i++) {
+    for (let i = 0; i < Math.min(text.length, 1024); i++) {
       const charCode = text.charCodeAt(i);
       embedding[i] += (charCode / 255 - 0.5) * 0.1;
     }
@@ -59,9 +57,13 @@ class VectorService {
       
       return results.matches.map(match => ({
         score: match.score,
-        text: match.metadata.text,
+        text: match.metadata.text || match.metadata.chunkContent,
         source: match.metadata.source,
-        chunkIndex: match.metadata.chunkIndex
+        title: match.metadata.title,
+        url: match.metadata.url,
+        category: match.metadata.category,
+        publishDate: match.metadata.publishDate,
+        chunkIndex: match.metadata.chunkIndex || match.metadata.chunk
       }));
     } catch (error) {
       throw new Error(`Vector search failed: ${error.message}`);
@@ -81,10 +83,66 @@ class VectorService {
     }
   }
 
+  async storeNewsArticles(articles) {
+    try {
+      console.log(`Storing ${articles.length} news articles in vector database...`);
+      const vectors = [];
+      
+      for (let i = 0; i < articles.length; i++) {
+        const article = articles[i];
+        
+        try {
+          console.log(`Processing article ${i + 1}/${articles.length}: ${article.title?.substring(0, 50)}...`);
+          
+          const embedding = await this.generateEmbedding(article.chunkContent || article.content);
+          
+          vectors.push({
+            id: article.id,
+            values: embedding,
+            metadata: {
+              title: article.title,
+              text: article.chunkContent || article.content,
+              chunkContent: article.chunkContent || article.content,
+              source: article.source,
+              url: article.url,
+              category: article.category,
+              publishDate: article.publishDate,
+              summary: article.summary,
+              chunk: article.chunk || 0,
+              chunkIndex: article.chunk || 0
+            }
+          });
+          
+          if (vectors.length >= 50) {
+            await this.index.upsert(vectors);
+            console.log(`Uploaded batch of ${vectors.length} vectors`);
+            vectors.length = 0; 
+            
+            await this.sleep(500);
+          }
+        } catch (error) {
+          console.error(`Failed to process article ${i + 1}:`, error.message);
+        }
+      }
+      
+      if (vectors.length > 0) {
+        await this.index.upsert(vectors);
+        console.log(`Uploaded final batch of ${vectors.length} vectors`);
+      }
+      
+      console.log('All news articles stored successfully!');
+      return { success: true, count: articles.length };
+      
+    } catch (error) {
+      console.error('Failed to store articles:', error.message);
+      throw new Error(`Vector storage failed: ${error.message}`);
+    }
+  }
+
   async searchBySource(sourceName, topK = 10) {
     try {
       const results = await this.index.query({
-        vector: new Array(768).fill(0),
+        vector: new Array(1024).fill(0), 
         topK: topK,
         includeMetadata: true,
         filter: {
@@ -93,12 +151,39 @@ class VectorService {
       });
       
       return results.matches.map(match => ({
-        text: match.metadata.text,
-        chunkIndex: match.metadata.chunkIndex
+        text: match.metadata.text || match.metadata.chunkContent,
+        title: match.metadata.title,
+        chunkIndex: match.metadata.chunkIndex || match.metadata.chunk
       }));
     } catch (error) {
       throw new Error(`Source search failed: ${error.message}`);
     }
+  }
+
+  async searchByCategory(category, topK = 10) {
+    try {
+      const results = await this.index.query({
+        vector: new Array(1024).fill(0),
+        topK: topK,
+        includeMetadata: true,
+        filter: {
+          category: { $eq: category }
+        }
+      });
+      
+      return results.matches.map(match => ({
+        text: match.metadata.text || match.metadata.chunkContent,
+        title: match.metadata.title,
+        source: match.metadata.source,
+        url: match.metadata.url
+      }));
+    } catch (error) {
+      throw new Error(`Category search failed: ${error.message}`);
+    }
+  }
+
+  async sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 }
 
