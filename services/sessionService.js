@@ -106,6 +106,64 @@ class SessionService {
     }
   }
 
+  async setSessionTitle(sessionId, title) {
+    try {
+      if (this.isConnected && this.client) {
+        const titleKey = `session_title:${sessionId}`;
+        await this.client.set(titleKey, title, { EX: 3600 * 24 });
+      } else {
+        if (!this.fallbackTitles) {
+          this.fallbackTitles = new Map();
+        }
+        this.fallbackTitles.set(sessionId, title);
+      }
+    } catch (error) {
+      console.error('Failed to set session title:', error);
+    }
+  }
+
+  async getSessionTitle(sessionId) {
+    try {
+      if (this.isConnected && this.client) {
+        const titleKey = `session_title:${sessionId}`;
+        const title = await this.client.get(titleKey);
+        return title || this.generateTitleFromId(sessionId);
+      } else {
+        if (!this.fallbackTitles) {
+          this.fallbackTitles = new Map();
+        }
+        return this.fallbackTitles.get(sessionId) || this.generateTitleFromId(sessionId);
+      }
+    } catch (error) {
+      return this.generateTitleFromId(sessionId);
+    }
+  }
+
+  generateTitleFromId(sessionId) {
+    return `Chat ${sessionId.substring(5, 12)}`;
+  }
+
+  generateTitleFromMessage(message) {
+    if (!message) return 'New Chat';
+    
+    const text = message.text || message;
+    if (typeof text !== 'string') return 'New Chat';
+    
+    let title = text.trim();
+    
+    if (title.length > 50) {
+      title = title.substring(0, 47) + '...';
+    }
+    
+    title = title.replace(/[^\w\s.,!?-]/g, '');
+    
+    if (title.length < 3) {
+      return 'New Chat';
+    }
+    
+    return title.charAt(0).toUpperCase() + title.slice(1);
+  }
+
   async getAllSessions() {
     try {
       if (this.isConnected && this.client) {
@@ -115,8 +173,10 @@ class SessionService {
           const sessionId = key.replace('session:', '');
           const messageCount = await this.client.lLen(key);
           const ttl = await this.client.ttl(key);
+          const title = await this.getSessionTitle(sessionId);
           sessions.push({
             sessionId,
+            title,
             messageCount,
             expiresIn: ttl > 0 ? ttl : -1
           });
@@ -125,6 +185,7 @@ class SessionService {
       } else {
         return Array.from(this.fallbackStorage.keys()).map(sessionId => ({
           sessionId,
+          title: this.getSessionTitle(sessionId),
           messageCount: this.fallbackStorage.get(sessionId).length,
           expiresIn: -1
         }));

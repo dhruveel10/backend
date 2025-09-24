@@ -29,7 +29,14 @@ app.post('/api/chat', async (req, res) => {
       sessionId = sessionService.generateSessionId();
     }
 
+    const isFirstMessage = (await sessionService.getSessionHistory(sessionId, 1)).length === 0;
+    
     await sessionService.addMessage(sessionId, { text: message }, true);
+    
+    if (isFirstMessage) {
+      const title = sessionService.generateTitleFromMessage({ text: message });
+      await sessionService.setSessionTitle(sessionId, title);
+    }
 
     const response = await chatService.processMessage(message, sessionId);
     
