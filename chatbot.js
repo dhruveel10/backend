@@ -76,14 +76,54 @@ app.get('/api/session/:sessionId/history', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { limit = 50 } = req.query;
+    const parsedLimit = parseInt(limit);
     
-    const exists = await sessionService.sessionExists(sessionId);
-    if (!exists) {
-      return res.status(404).json({ error: 'Session not found or expired', sessionId, exists: false });
+    // First, check Redis
+    const redisExists = await sessionService.sessionExists(sessionId);
+    
+    if (redisExists) {
+      // Session active in Redis - return normally
+      const history = await sessionService.getSessionHistory(sessionId, parsedLimit);
+      res.json({ 
+        sessionId, 
+        history, 
+        exists: true,
+        source: 'redis',
+        restored: false
+      });
+    } else {
+      // Session not in Redis - check MySQL and attempt restore
+      console.log(`Session ${sessionId} not found in Redis, checking MySQL...`);
+      
+      const restoreResult = await sessionService.restoreSessionFromStorage(
+        sessionId, 
+        sessionStorageService, 
+        parsedLimit
+      );
+      
+      if (restoreResult.restored) {
+        // Successfully restored from MySQL
+        res.json({
+          sessionId,
+          history: restoreResult.messages,
+          exists: true,
+          source: 'mysql',
+          restored: true,
+          restoredCount: restoreResult.restoredCount,
+          message: `Session restored from storage with ${restoreResult.restoredCount} messages`
+        });
+      } else {
+        // Not found in either Redis or MySQL - truly new session
+        res.json({
+          sessionId,
+          history: [],
+          exists: false,
+          source: 'none',
+          restored: false,
+          message: 'New session - no history found'
+        });
+      }
     }
-    
-    const history = await sessionService.getSessionHistory(sessionId, parseInt(limit));
-    res.json({ sessionId, history, exists: true });
   } catch (error) {
     console.error('Session history error:', error);
     res.status(500).json({ error: 'Failed to fetch session history' });
@@ -93,8 +133,27 @@ app.get('/api/session/:sessionId/history', async (req, res) => {
 app.get('/api/session/:sessionId/exists', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const exists = await sessionService.sessionExists(sessionId);
-    res.json({ sessionId, exists });
+    
+    const redisExists = await sessionService.sessionExists(sessionId);
+    
+    if (redisExists) {
+      res.json({ 
+        sessionId, 
+        exists: true,
+        location: 'redis',
+        restorable: false
+      });
+    } else {
+      const mysqlHistory = await sessionStorageService.getSessionHistory(sessionId, 1);
+      const mysqlExists = mysqlHistory && mysqlHistory.length > 0;
+      
+      res.json({ 
+        sessionId, 
+        exists: mysqlExists,
+        location: mysqlExists ? 'mysql' : 'none',
+        restorable: mysqlExists
+      });
+    }
   } catch (error) {
     console.error('Session exists error:', error);
     res.status(500).json({ error: 'Failed to check session existence' });
@@ -181,6 +240,86 @@ app.post('/api/sessions/cleanup', async (req, res) => {
   } catch (error) {
     console.error('Cleanup sessions error:', error);
     res.status(500).json({ error: 'Failed to cleanup sessions' });
+  }
+});
+
+app.delete('/api/session/:sessionId/redis', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    
+    const redisExists = await sessionService.sessionExists(sessionId);
+    if (!redisExists) {
+      return res.status(404).json({ 
+        error: 'Session not found in Redis',
+        sessionId,
+        exists: false
+      });
+    }
+    
+    const result = await sessionService.clearSession(sessionId);
+    
+    const mysqlHistory = await sessionStorageService.getSessionHistory(sessionId, 1);
+    const stillInMySQL = mysqlHistory && mysqlHistory.length > 0;
+    
+    res.json({
+      message: 'Session deleted from Redis (testing)',
+      sessionId,
+      redisDeleted: result.success,
+      stillInMySQL,
+      status: stillInMySQL ? 'restorable' : 'completely_deleted'
+    });
+  } catch (error) {
+    console.error('Delete Redis session error:', error);
+    res.status(500).json({ error: 'Failed to delete session from Redis' });
+  }
+});
+
+app.get('/api/sessions/status', async (req, res) => {
+  try {
+    const redisStats = await sessionService.getStats();
+    const storageStats = await sessionStorageService.getStats();
+    
+    const redisSessions = await sessionService.getAllSessions();
+    const storedSessions = await sessionStorageService.getAllSessions();
+    
+    const activeSessionIds = new Set(redisSessions.map(s => s.sessionId));
+    const inactiveSessions = storedSessions.filter(s => !activeSessionIds.has(s.sessionId));
+    
+    res.json({
+      redis: {
+        connected: redisStats.connected,
+        activeSessions: redisStats.activeSessions || 0,
+        sessionList: redisSessions.map(s => ({
+          sessionId: s.sessionId,
+          title: s.title,
+          messageCount: s.messageCount,
+          lastActivity: s.lastActivity,
+          status: 'active'
+        }))
+      },
+      mysql: {
+        totalMessages: storageStats.totalMessages,
+        totalSessions: storageStats.totalSessions,
+        inactiveSessions: inactiveSessions.length,
+        inactiveSessionList: inactiveSessions.map(s => ({
+          sessionId: s.sessionId,
+          messageCount: s.messageCount,
+          lastActivity: s.lastActivity,
+          firstActivity: s.firstActivity,
+          status: 'inactive',
+          restorable: true
+        }))
+      },
+      summary: {
+        totalActive: redisStats.activeSessions || 0,
+        totalInactive: inactiveSessions.length,
+        totalStored: storageStats.totalSessions,
+        totalMessages: storageStats.totalMessages
+      }
+    });
+  } catch (error) {
+    console.error('Get session status error:', error);
+    res.status(500).json({ error: 'Failed to get session status' });
   }
 });
 

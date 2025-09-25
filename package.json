@@ -8,7 +8,10 @@
     "start": "node chatbot.js",
     "dev": "nodemon chatbot.js",
     "ingest": "node ingestNews.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:recovery": "node test-recovery.js",
+    "test:recovery-expire": "node test-recovery.js --expire-now",
+    "test:recovery-api": "node test-recovery-api.js"
   },
   "engines": {
     "node": ">=18.0.0"

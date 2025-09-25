@@ -90,6 +90,63 @@ class SessionService {
     }
   }
 
+  async restoreSessionFromStorage(sessionId, sessionStorageService, limit = 50) {
+    try {
+      console.log(`Attempting to restore session ${sessionId} from MySQL`);
+      
+      const mysqlHistory = await sessionStorageService.getSessionHistory(sessionId, limit);
+      if (!mysqlHistory || mysqlHistory.length === 0) {
+        console.log(`No MySQL data found for session ${sessionId}`);
+        return { restored: false, messages: [] };
+      }
+
+      console.log(`Found ${mysqlHistory.length} messages in MySQL for session ${sessionId}`);
+
+      const redisMessages = mysqlHistory.reverse().map(msg => ({
+        id: require('uuid').v4(),
+        text: msg.message,
+        isUser: msg.role === 'user',
+        timestamp: msg.timestamp,
+        sources: []
+      }));
+
+      if (this.isConnected && this.client) {
+        const sessionKey = `session:${sessionId}`;
+        
+        await this.client.del(sessionKey);
+        
+        for (const message of redisMessages) {
+          await this.client.lPush(sessionKey, JSON.stringify(message));
+        }
+        
+        await this.client.expire(sessionKey, 3600 * 24);
+        
+        if (redisMessages.length > 0) {
+          const title = this.generateTitleFromMessage({ text: redisMessages[0].text });
+          await this.setSessionTitle(sessionId, title);
+        }
+        
+        console.log(`Successfully restored ${redisMessages.length} messages to Redis for session ${sessionId}`);
+      } else {
+        if (!this.fallbackStorage.has(sessionId)) {
+          this.fallbackStorage.set(sessionId, []);
+        }
+        this.fallbackStorage.set(sessionId, redisMessages);
+        
+        console.log(`Successfully restored ${redisMessages.length} messages to fallback storage for session ${sessionId}`);
+      }
+
+      return { 
+        restored: true, 
+        messages: redisMessages.reverse(),
+        restoredCount: redisMessages.length
+      };
+    } catch (error) {
+      console.error(`Failed to restore session ${sessionId}:`, error);
+      return { restored: false, messages: [], error: error.message };
+    }
+  }
+
   async sessionExists(sessionId) {
     try {
       if (this.isConnected && this.client) {
