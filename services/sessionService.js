@@ -49,7 +49,7 @@ class SessionService {
       sources: message.sources || [],
       chart: message.chart || null
     };
-
+    
     try {
       if (this.isConnected && this.client) {
         const sessionKey = `session:${sessionId}`;
@@ -74,11 +74,13 @@ class SessionService {
   }
 
   async getSessionHistory(sessionId, limit = 50) {
+    
     try {
       if (this.isConnected && this.client) {
         const sessionKey = `session:${sessionId}`;
         const messages = await this.client.lRange(sessionKey, 0, limit - 1);
-        return messages.map(msg => JSON.parse(msg)).reverse();
+        const parsed = messages.map(msg => JSON.parse(msg)).reverse();
+        return parsed;
       } else {
         const messages = this.fallbackStorage.get(sessionId) || [];
         return messages.slice(0, limit).reverse();

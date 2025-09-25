@@ -25,18 +25,21 @@ app.use(express.json());
 const vectorService = new VectorService();
 const llmService = new LLMService();
 const sessionService = new SessionService();
-const chatService = new ChatService(vectorService, llmService);
+const chatService = new ChatService(vectorService, llmService, sessionService);
 
 app.post('/api/chat', async (req, res) => {
   try {
     let { message, sessionId } = req.body;
     
     if (!message) {
+      console.error('No message provided');
       return res.status(400).json({ error: 'Message is required' });
     }
 
     if (!sessionId) {
       sessionId = sessionService.generateSessionId();
+    } else {
+      console.log('Using existing sessionId:', sessionId);
     }
 
     const isFirstMessage = (await sessionService.getSessionHistory(sessionId, 1)).length === 0;
@@ -55,6 +58,13 @@ app.post('/api/chat', async (req, res) => {
       sources: response.sources,
       chart: response.chart 
     }, false);
+
+    try {
+      const title = await sessionService.getSessionTitle(sessionId);
+      const transcriptId = await chatService.saveSessionTranscript(sessionId, title);
+    } catch (autoSaveError) {
+      console.error(' REST API: Auto-save to transcript failed:', autoSaveError.message);
+    }
 
     res.json({
       ...response,
@@ -129,17 +139,116 @@ app.get('/api/stats', async (req, res) => {
     const stats = await vectorService.getStats();
     const geminiStatus = await llmService.checkGeminiStatus();
     const sessionStats = await sessionService.getStats();
+    const transcriptStats = await chatService.getTranscriptStats();
     res.json({
       ...stats,
       llmStatus: geminiStatus ? 'online' : 'offline',
-      sessions: sessionStats
+      sessions: sessionStats,
+      transcripts: transcriptStats
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get stats' });
   }
 });
 
-// Socket.IO event handlers
+app.post('/api/transcripts/save', async (req, res) => {
+  try {
+    const { sessionId, title } = req.body;
+    
+    if (!sessionId) {
+      console.error('No session ID provided');
+      return res.status(400).json({ error: 'Session ID is required' });
+    }
+
+    const transcriptId = await chatService.saveSessionTranscript(sessionId, title);
+    
+    if (!transcriptId) {
+      return res.status(400).json({ error: 'No conversation history found for this session' });
+    }
+
+    res.json({ transcriptId, message: 'Transcript saved successfully' });
+  } catch (error) {
+    console.error('Save transcript error:', error);
+    res.status(500).json({ error: 'Failed to save transcript' });
+  }
+});
+
+app.get('/api/transcripts', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query;
+    const parsedLimit = parseInt(limit) || 50;
+    const parsedOffset = parseInt(offset) || 0;
+    
+    const transcripts = await chatService.getAllTranscripts(parsedLimit, parsedOffset);
+    
+    res.json({ transcripts });
+  } catch (error) {
+    console.error('Get transcripts error:', error);
+    res.status(500).json({ error: 'Failed to get transcripts' });
+  }
+});
+
+app.get('/api/transcripts/:transcriptId', async (req, res) => {
+  try {
+    const { transcriptId } = req.params;
+    const transcript = await chatService.getTranscript(transcriptId);
+    
+    if (!transcript) {
+      return res.status(404).json({ error: 'Transcript not found' });
+    }
+
+    res.json({ transcript });
+  } catch (error) {
+    console.error('Get transcript error:', error);
+    res.status(500).json({ error: 'Failed to get transcript' });
+  }
+});
+
+app.get('/api/session/:sessionId/transcripts', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { limit = 10 } = req.query;
+    const parsedLimit = parseInt(limit) || 10;
+    const transcripts = await chatService.getTranscriptsBySession(sessionId, parsedLimit);
+    res.json({ transcripts });
+  } catch (error) {
+    console.error('Get session transcripts error:', error);
+    res.status(500).json({ error: 'Failed to get session transcripts' });
+  }
+});
+
+app.get('/api/transcripts/search/:query', async (req, res) => {
+  try {
+    const { query } = req.params;
+    
+    if (!query || query.trim().length < 2) {
+      return res.status(400).json({ error: 'Query must be at least 2 characters long' });
+    }
+
+    const transcripts = await chatService.searchTranscripts(query.trim());
+    res.json({ transcripts, query: query.trim() });
+  } catch (error) {
+    console.error('Search transcripts error:', error);
+    res.status(500).json({ error: 'Failed to search transcripts' });
+  }
+});
+
+app.delete('/api/transcripts/:transcriptId', async (req, res) => {
+  try {
+    const { transcriptId } = req.params;
+    const deleted = await chatService.deleteTranscript(transcriptId);
+    
+    if (!deleted) {
+      return res.status(404).json({ error: 'Transcript not found' });
+    }
+
+    res.json({ message: 'Transcript deleted successfully' });
+  } catch (error) {
+    console.error('Delete transcript error:', error);
+    res.status(500).json({ error: 'Failed to delete transcript' });
+  }
+});
+
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
   
@@ -153,6 +262,7 @@ io.on('connection', (socket) => {
       const { message, sessionId } = data;
       
       if (!message) {
+        console.error('Socket: No message provided');
         socket.emit('error', { error: 'Message is required' });
         return;
       }
@@ -160,6 +270,8 @@ io.on('connection', (socket) => {
       let currentSessionId = sessionId;
       if (!currentSessionId) {
         currentSessionId = sessionService.generateSessionId();
+      } else {
+        console.log('Socket: Using existing sessionId:', currentSessionId);
       }
 
       const isFirstMessage = (await sessionService.getSessionHistory(currentSessionId, 1)).length === 0;
@@ -171,7 +283,6 @@ io.on('connection', (socket) => {
         await sessionService.setSessionTitle(currentSessionId, title);
       }
 
-      // Emit typing indicator
       socket.emit('bot-typing', { sessionId: currentSessionId });
       
       const response = await chatService.processMessage(message, currentSessionId);
@@ -181,11 +292,19 @@ io.on('connection', (socket) => {
         sources: response.sources,
         chart: response.chart 
       }, false);
+      
+      try {
+        const title = await sessionService.getSessionTitle(currentSessionId);
+        const transcriptId = await chatService.saveSessionTranscript(currentSessionId, title);
+        if (!transcriptId) {
+          console.log('Socket: No transcript created (likely no history)');
+        }
+      } catch (autoSaveError) {
+        console.error('Socket: Auto-save to transcript failed:', autoSaveError.message);
+      }
 
-      // Stop typing indicator
       socket.emit('bot-typing-stop', { sessionId: currentSessionId });
       
-      // Stream the response word by word
       const words = response.response.split(' ');
       let currentText = '';
       
@@ -200,7 +319,6 @@ io.on('connection', (socket) => {
           sessionId: currentSessionId
         });
         
-        // Add small delay between words for streaming effect
         await new Promise(resolve => setTimeout(resolve, 50));
       }
 

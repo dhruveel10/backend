@@ -45,7 +45,7 @@ class VectorService {
     return embedding.map(val => magnitude > 0 ? val / magnitude : 0);
   }
 
-  async searchSimilar(query, topK = 5) {
+  async searchSimilar(query, topK = 10) {
     try {
       const queryEmbedding = await this.generateEmbedding(query);
       
