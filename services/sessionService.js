@@ -181,6 +181,7 @@ class SessionService {
   }
 
   async getAllSessions() {
+    console.log('getAllSessions called, isConnected:', this.isConnected);
     try {
       if (this.isConnected && this.client) {
         const keys = await this.client.keys('session:*');
@@ -190,21 +191,45 @@ class SessionService {
           const messageCount = await this.client.lLen(key);
           const ttl = await this.client.ttl(key);
           const title = await this.getSessionTitle(sessionId);
+          
+          // Get the last message timestamp
+          let lastActivity = null;
+          try {
+            const lastMessages = await this.client.lRange(key, 0, 0);
+            if (lastMessages.length > 0) {
+              const lastMessage = JSON.parse(lastMessages[0]);
+              lastActivity = lastMessage.timestamp;
+            }
+          } catch (timestampError) {
+            console.warn('Failed to get last message timestamp:', timestampError);
+          }
+          
           sessions.push({
             sessionId,
             title,
             messageCount,
-            expiresIn: ttl > 0 ? ttl : -1
+            expiresIn: ttl > 0 ? ttl : -1,
+            lastActivity
           });
         }
+        console.log('Returning Redis sessions:', sessions.length);
         return sessions;
       } else {
-        return Array.from(this.fallbackStorage.keys()).map(sessionId => ({
-          sessionId,
-          title: this.getSessionTitle(sessionId),
-          messageCount: this.fallbackStorage.get(sessionId).length,
-          expiresIn: -1
-        }));
+        const sessions = [];
+        for (const sessionId of this.fallbackStorage.keys()) {
+          const messages = this.fallbackStorage.get(sessionId) || [];
+          const lastActivity = messages.length > 0 ? messages[0].timestamp : null;
+          const title = await this.getSessionTitle(sessionId);
+          sessions.push({
+            sessionId,
+            title,
+            messageCount: messages.length,
+            expiresIn: -1,
+            lastActivity
+          });
+        }
+        console.log('Returning fallback sessions:', sessions.length);
+        return sessions;
       }
     } catch (error) {
       console.error('Failed to get sessions:', error);
