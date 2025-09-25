@@ -173,8 +173,27 @@ app.delete('/api/session/:sessionId', async (req, res) => {
 
 app.get('/api/sessions', async (req, res) => {
   try {
-    const sessions = await sessionService.getAllSessions();
-    res.json({ sessions });
+    const activeSessions = await sessionService.getAllSessions();
+    const storedSessions = await sessionStorageService.getAllSessions(200);
+    
+    const activeSessionIds = new Set(activeSessions.map(s => s.sessionId));
+    const inactiveSessions = storedSessions
+      .filter(s => !activeSessionIds.has(s.sessionId))
+      .map(s => ({
+        sessionId: s.sessionId,
+        title: `Session ${s.sessionId.substring(5, 12)}`,
+        messageCount: s.messageCount,
+        lastActivity: s.lastActivity,
+        firstActivity: s.firstActivity,
+        isActive: false
+      }));
+    
+    const allSessions = [
+      ...activeSessions.map(s => ({ ...s, isActive: true })),
+      ...inactiveSessions
+    ];
+    
+    res.json({ sessions: allSessions });
   } catch (error) {
     console.error('Get sessions error:', error);
     res.status(500).json({ error: 'Failed to get sessions' });
@@ -183,7 +202,8 @@ app.get('/api/sessions', async (req, res) => {
 
 app.get('/api/sessions/stored', async (req, res) => {
   try {
-    const sessions = await sessionStorageService.getAllSessions();
+    const { limit = 100 } = req.query;
+    const sessions = await sessionStorageService.getAllSessions(parseInt(limit));
     res.json({ sessions });
   } catch (error) {
     console.error('Get stored sessions error:', error);
@@ -280,7 +300,7 @@ app.get('/api/sessions/status', async (req, res) => {
     const storageStats = await sessionStorageService.getStats();
     
     const redisSessions = await sessionService.getAllSessions();
-    const storedSessions = await sessionStorageService.getAllSessions();
+    const storedSessions = await sessionStorageService.getAllSessions(200);
     
     const activeSessionIds = new Set(redisSessions.map(s => s.sessionId));
     const inactiveSessions = storedSessions.filter(s => !activeSessionIds.has(s.sessionId));

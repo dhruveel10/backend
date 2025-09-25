@@ -71,8 +71,10 @@ class SessionStorageService {
     }
 
     try {
-      const sql = 'SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT ?';
-      const [rows] = await this.pool.execute(sql, [sessionId, limit]);
+      const parsedLimit = parseInt(limit) || 50;
+      console.log('getSessionHistory params:', { sessionId, limit, parsedLimit });
+      const sql = `SELECT * FROM chat_messages WHERE session_id = ? ORDER BY timestamp ASC LIMIT ${parsedLimit}`;
+      const [rows] = await this.pool.query(sql, [sessionId]);
       
       return rows.map(row => ({
         id: row.id,
@@ -94,6 +96,8 @@ class SessionStorageService {
     }
 
     try {
+      const parsedLimit = parseInt(limit) || 100;
+      console.log('getAllSessions params:', { limit, parsedLimit });
       const sql = `
         SELECT 
           session_id,
@@ -103,9 +107,9 @@ class SessionStorageService {
         FROM chat_messages 
         GROUP BY session_id 
         ORDER BY last_activity DESC 
-        LIMIT ?
+        LIMIT ${parsedLimit}
       `;
-      const [rows] = await this.pool.execute(sql, [limit]);
+      const [rows] = await this.pool.query(sql);
       
       return rows.map(row => ({
         sessionId: row.session_id,
