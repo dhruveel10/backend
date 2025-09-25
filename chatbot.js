@@ -56,7 +56,6 @@ app.post('/api/chat', async (req, res) => {
     await sessionService.addMessage(sessionId, { 
       text: response.response,
       sources: response.sources,
-      chart: response.chart 
     }, false);
 
     try {
@@ -290,8 +289,7 @@ io.on('connection', (socket) => {
       await sessionService.addMessage(currentSessionId, { 
         text: response.response,
         sources: response.sources,
-        chart: response.chart 
-      }, false);
+        }, false);
       
       try {
         const title = await sessionService.getSessionTitle(currentSessionId);
@@ -315,7 +313,6 @@ io.on('connection', (socket) => {
           text: currentText,
           isComplete: i === words.length - 1,
           sources: i === words.length - 1 ? response.sources : [],
-          chart: i === words.length - 1 ? response.chart : null,
           sessionId: currentSessionId
         });
         

@@ -1,7 +1,7 @@
 {
-  "name": "financial-chatbot-backend",
+  "name": "news-analysis-backend",
   "version": "1.0.0",
-  "description": "Financial chatbot with RAG using Pinecone and Gemini API",
+  "description": "News analysis chatbot with RAG using Pinecone and Gemini API",
   "main": "chatbot.js",
   "scripts": {
     "build": "echo 'No build step required'",
@@ -37,6 +37,6 @@
     "gemini",
     "pinecone",
     "rag",
-    "financial"
+    "news"
   ]
 }

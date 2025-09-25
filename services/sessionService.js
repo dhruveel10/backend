@@ -47,7 +47,6 @@ class SessionService {
       isUser,
       timestamp: new Date().toISOString(),
       sources: message.sources || [],
-      chart: message.chart || null
     };
     
     try {
