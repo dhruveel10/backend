@@ -7,6 +7,7 @@ const { VectorService } = require('./services/vectorService');
 const { LLMService } = require('./services/llmService');
 const { ChatService } = require('./services/chatService');
 const { SessionService } = require('./services/sessionService');
+const { SessionStorageService } = require('./services/sessionStorageService');
 
 const app = express();
 const server = http.createServer(app);
@@ -25,6 +26,7 @@ app.use(express.json());
 const vectorService = new VectorService();
 const llmService = new LLMService();
 const sessionService = new SessionService();
+const sessionStorageService = new SessionStorageService();
 const chatService = new ChatService(vectorService, llmService, sessionService);
 
 app.post('/api/chat', async (req, res) => {
@@ -45,6 +47,7 @@ app.post('/api/chat', async (req, res) => {
     const isFirstMessage = (await sessionService.getSessionHistory(sessionId, 1)).length === 0;
     
     await sessionService.addMessage(sessionId, { text: message }, true);
+    await sessionStorageService.saveMessage(sessionId, message, 'user');
     
     if (isFirstMessage) {
       const title = sessionService.generateTitleFromMessage({ text: message });
@@ -57,13 +60,7 @@ app.post('/api/chat', async (req, res) => {
       text: response.response,
       sources: response.sources,
     }, false);
-
-    try {
-      const title = await sessionService.getSessionTitle(sessionId);
-      const transcriptId = await chatService.saveSessionTranscript(sessionId, title);
-    } catch (autoSaveError) {
-      console.error(' REST API: Auto-save to transcript failed:', autoSaveError.message);
-    }
+    await sessionStorageService.saveMessage(sessionId, response.response, 'bot');
 
     res.json({
       ...response,
@@ -125,6 +122,29 @@ app.get('/api/sessions', async (req, res) => {
   }
 });
 
+app.get('/api/sessions/stored', async (req, res) => {
+  try {
+    const sessions = await sessionStorageService.getAllSessions();
+    res.json({ sessions });
+  } catch (error) {
+    console.error('Get stored sessions error:', error);
+    res.status(500).json({ error: 'Failed to get stored sessions' });
+  }
+});
+
+app.get('/api/session/:sessionId/stored-history', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { limit = 50 } = req.query;
+    
+    const history = await sessionStorageService.getSessionHistory(sessionId, parseInt(limit));
+    res.json({ sessionId, history });
+  } catch (error) {
+    console.error('Get stored session history error:', error);
+    res.status(500).json({ error: 'Failed to fetch stored session history' });
+  }
+});
+
 app.get('/api/health', async (req, res) => {
   const geminiStatus = await llmService.checkGeminiStatus();
   res.json({ 
@@ -138,113 +158,29 @@ app.get('/api/stats', async (req, res) => {
     const stats = await vectorService.getStats();
     const geminiStatus = await llmService.checkGeminiStatus();
     const sessionStats = await sessionService.getStats();
-    const transcriptStats = await chatService.getTranscriptStats();
+    const storageStats = await sessionStorageService.getStats();
     res.json({
       ...stats,
       llmStatus: geminiStatus ? 'online' : 'offline',
       sessions: sessionStats,
-      transcripts: transcriptStats
+      storage: storageStats
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to get stats' });
   }
 });
 
-app.post('/api/transcripts/save', async (req, res) => {
+
+app.post('/api/sessions/cleanup', async (req, res) => {
   try {
-    const { sessionId, title } = req.body;
-    
-    if (!sessionId) {
-      console.error('No session ID provided');
-      return res.status(400).json({ error: 'Session ID is required' });
-    }
-
-    const transcriptId = await chatService.saveSessionTranscript(sessionId, title);
-    
-    if (!transcriptId) {
-      return res.status(400).json({ error: 'No conversation history found for this session' });
-    }
-
-    res.json({ transcriptId, message: 'Transcript saved successfully' });
+    const result = await sessionService.cleanupEmptySessions();
+    res.json({
+      message: `Cleaned up ${result.cleaned} empty sessions`,
+      ...result
+    });
   } catch (error) {
-    console.error('Save transcript error:', error);
-    res.status(500).json({ error: 'Failed to save transcript' });
-  }
-});
-
-app.get('/api/transcripts', async (req, res) => {
-  try {
-    const { limit = 50, offset = 0 } = req.query;
-    const parsedLimit = parseInt(limit) || 50;
-    const parsedOffset = parseInt(offset) || 0;
-    
-    const transcripts = await chatService.getAllTranscripts(parsedLimit, parsedOffset);
-    
-    res.json({ transcripts });
-  } catch (error) {
-    console.error('Get transcripts error:', error);
-    res.status(500).json({ error: 'Failed to get transcripts' });
-  }
-});
-
-app.get('/api/transcripts/:transcriptId', async (req, res) => {
-  try {
-    const { transcriptId } = req.params;
-    const transcript = await chatService.getTranscript(transcriptId);
-    
-    if (!transcript) {
-      return res.status(404).json({ error: 'Transcript not found' });
-    }
-
-    res.json({ transcript });
-  } catch (error) {
-    console.error('Get transcript error:', error);
-    res.status(500).json({ error: 'Failed to get transcript' });
-  }
-});
-
-app.get('/api/session/:sessionId/transcripts', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { limit = 10 } = req.query;
-    const parsedLimit = parseInt(limit) || 10;
-    const transcripts = await chatService.getTranscriptsBySession(sessionId, parsedLimit);
-    res.json({ transcripts });
-  } catch (error) {
-    console.error('Get session transcripts error:', error);
-    res.status(500).json({ error: 'Failed to get session transcripts' });
-  }
-});
-
-app.get('/api/transcripts/search/:query', async (req, res) => {
-  try {
-    const { query } = req.params;
-    
-    if (!query || query.trim().length < 2) {
-      return res.status(400).json({ error: 'Query must be at least 2 characters long' });
-    }
-
-    const transcripts = await chatService.searchTranscripts(query.trim());
-    res.json({ transcripts, query: query.trim() });
-  } catch (error) {
-    console.error('Search transcripts error:', error);
-    res.status(500).json({ error: 'Failed to search transcripts' });
-  }
-});
-
-app.delete('/api/transcripts/:transcriptId', async (req, res) => {
-  try {
-    const { transcriptId } = req.params;
-    const deleted = await chatService.deleteTranscript(transcriptId);
-    
-    if (!deleted) {
-      return res.status(404).json({ error: 'Transcript not found' });
-    }
-
-    res.json({ message: 'Transcript deleted successfully' });
-  } catch (error) {
-    console.error('Delete transcript error:', error);
-    res.status(500).json({ error: 'Failed to delete transcript' });
+    console.error('Cleanup sessions error:', error);
+    res.status(500).json({ error: 'Failed to cleanup sessions' });
   }
 });
 
@@ -276,6 +212,7 @@ io.on('connection', (socket) => {
       const isFirstMessage = (await sessionService.getSessionHistory(currentSessionId, 1)).length === 0;
       
       await sessionService.addMessage(currentSessionId, { text: message }, true);
+      await sessionStorageService.saveMessage(currentSessionId, message, 'user');
       
       if (isFirstMessage) {
         const title = sessionService.generateTitleFromMessage({ text: message });
@@ -290,16 +227,7 @@ io.on('connection', (socket) => {
         text: response.response,
         sources: response.sources,
         }, false);
-      
-      try {
-        const title = await sessionService.getSessionTitle(currentSessionId);
-        const transcriptId = await chatService.saveSessionTranscript(currentSessionId, title);
-        if (!transcriptId) {
-          console.log('Socket: No transcript created (likely no history)');
-        }
-      } catch (autoSaveError) {
-        console.error('Socket: Auto-save to transcript failed:', autoSaveError.message);
-      }
+      await sessionStorageService.saveMessage(currentSessionId, response.response, 'bot');
 
       socket.emit('bot-typing-stop', { sessionId: currentSessionId });
       
@@ -330,9 +258,34 @@ io.on('connection', (socket) => {
   });
 });
 
+async function runMaintenanceTasks() {
+  try {
+    console.log('Running automatic session maintenance...');
+    
+    const emptyResult = await sessionService.cleanupEmptySessions();
+    
+    if (emptyResult.cleaned > 0 || emptyResult.errors.length > 0) {
+      console.log(`Maintenance completed: ${emptyResult.cleaned} empty sessions cleaned, ${emptyResult.errors.length} errors`);
+    }
+    
+    if (emptyResult.errors.length > 0) {
+      console.warn('Maintenance errors:', emptyResult.errors);
+    }
+  } catch (error) {
+    console.error('Maintenance task failed:', error);
+  }
+}
+
 server.listen(PORT, async () => {
   console.log(`Chatbot server running on port ${PORT}`);
   console.log(`Socket.IO server enabled with CORS for frontend`);
   const geminiStatus = await llmService.checkGeminiStatus();
   console.log(`Gemini API status: ${geminiStatus ? 'Connected' : 'Offline - check GEMINI_API_KEY'}`);
+  
+  const maintenanceInterval = parseInt(process.env.MAINTENANCE_INTERVAL_HOURS) || 4;
+  console.log(`Session cleanup will run every ${maintenanceInterval} hours`);
+  
+  setInterval(runMaintenanceTasks, maintenanceInterval * 60 * 60 * 1000);
+  
+  setTimeout(runMaintenanceTasks, 30000);
 });

@@ -263,6 +263,35 @@ class SessionService {
     }
   }
 
+
+  async cleanupEmptySessions() {
+    const results = { cleaned: 0, errors: [] };
+
+    try {
+      const sessions = await this.getAllSessions();
+
+      for (const session of sessions) {
+        try {
+          if (session.messageCount === 0) {
+            const clearResult = await this.clearSession(session.sessionId);
+            if (clearResult.success) {
+              results.cleaned++;
+              console.log(`Cleaned empty session: ${session.sessionId}`);
+            } else {
+              results.errors.push(`${session.sessionId}: Failed to clear`);
+            }
+          }
+        } catch (error) {
+          results.errors.push(`${session.sessionId}: ${error.message}`);
+        }
+      }
+    } catch (error) {
+      results.errors.push(`Failed to get sessions: ${error.message}`);
+    }
+
+    return results;
+  }
+
   async close() {
     try {
       if (this.client && this.isConnected) {
